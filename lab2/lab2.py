@@ -1,4 +1,5 @@
 import os
+import re
 from datetime import datetime
 import urllib.request
 import pandas as pd
@@ -11,15 +12,15 @@ province_id_map = {
     21: 17, 22: 18, 8: 19, 9: 20, 10: 21, 1: 22, 2: 23, 3: 24
 }
 
-# NOAA ID -> назва області
-province_name_map = {
-    24: "Вінницька", 25: "Волинська", 5: "Дніпропетровська", 4: "Республіка Крим",
-    6: "Донецька", 27: "Житомирська", 23: "Закарпатська", 26: "Запорізька",
-    7: "Івано-Франківська", 11: "Київська", 13: "Кіровоградська", 14: "Луганська",
-    15: "Львівська", 16: "Миколаївська", 17: "Одеська", 18: "Полтавська",
-    19: "Рівненська", 21: "Сумська", 22: "Тернопільська", 8: "Харківська",
-    9: "Херсонська", 10: "Хмельницька", 1: "Черкаська", 2: "Чернівецька",
-    3: "Чернігівська"
+# Український ID -> назва області
+ua_id_to_name = {
+    1: "Вінницька", 2: "Волинська", 3: "Дніпропетровська", 4: "Донецька",
+    5: "Житомирська", 6: "Закарпатська", 7: "Запорізька", 8: "Івано-Франківська",
+    9: "Київська", 10: "Кіровоградська", 11: "Луганська", 12: "Львівська",
+    13: "Миколаївська", 14: "Одеська", 15: "Полтавська", 16: "Рівненська",
+    17: "Сумська", 18: "Тернопільська", 19: "Харківська", 20: "Херсонська",
+    21: "Хмельницька", 22: "Черкаська", 23: "Чернігівська", 24: "Чернівецька",
+    25: "Республіка Крим"
 }
 
 # Для виведення інформації без обрізання
@@ -31,11 +32,15 @@ os.makedirs(data_dir, exist_ok=True)
 
 # Завантаження VHI-даних
 def download_vhi():
-    if os.path.exists(data_dir) and any(f.endswith('.csv') for f in os.listdir(data_dir)):
-        print("[INFO] Дані вже існують. Завантаження пропущено.")
-        return
-
     for noaa_id in province_id_map.keys():
+        already_downloaded = any(
+            f.startswith(f"NOAA_ID{noaa_id}_") and f.endswith('.csv')
+            for f in os.listdir(data_dir)
+        )
+        if already_downloaded:
+            print(f"[ІНФО] Дані для NOAA ID {noaa_id} вже існують. Завантаження пропущено.")
+            continue
+
         now = datetime.now()
         date_and_time_time = now.strftime("%d%m%Y%H%M%S")
         url = f"https://www.star.nesdis.noaa.gov/smcd/emb/vci/VH/get_TS_admin.php?country=UKR&provinceID={noaa_id}&year1=1981&year2=2024&type=Mean"
@@ -58,24 +63,28 @@ def read_all_vhi_files(directory):
         if filename.endswith('.csv'):
             path = os.path.join(directory, filename)
             try:
-                df = pd.read_csv(path, index_col=False, header=1)
-                df.columns = ['Year', 'Week', 'SMN', 'SMT', 'VCI', 'TCI', 'VHI']
+                # Отримуємо NOAA ID з імені файлу через регулярний вираз
+                match = re.search(r'NOAA_ID(\d+)_', filename)
+                if not match:
+                    print(f"[ПОМИЛКА] Не вдалось витягнути NOAA ID з файлу {filename}")
+                    continue
+                noaa_id = int(match.group(1))
+                ua_id = province_id_map.get(noaa_id)
+                province_name = ua_id_to_name.get(ua_id, "Невідома область")
 
-                noaa_id_str = filename.split('_')[1]
-                noaa_id = int(noaa_id_str.replace('ID', ''))
-
-                ua_province_id = province_id_map.get(noaa_id)
-                province_name = province_name_map.get(noaa_id)
-
-                if ua_province_id is None or province_name is None:
-                    print(f"[ПОМИЛКА] Не знайдено інформацію для NOAA ID: {noaa_id} у файлі {filename}")
+                if ua_id is None:
+                    print(f"[ПОМИЛКА] Не знайдено UA ID для NOAA ID {noaa_id} у файлі {filename}")
                     continue
 
-                df['Province_id'] = ua_province_id
+                df = pd.read_csv(path, index_col=False, header=1)
+                df.columns = ['Year', 'Week', 'SMN', 'SMT', 'VCI', 'TCI', 'VHI']
+                df['Province_id'] = ua_id
                 df['Province_name'] = province_name
                 df_list.append(df)
             except Exception as e:
                 print(f"[ПОМИЛКА] Не вдалося зчитати {filename}: {e}")
+    if not df_list:
+        raise ValueError("[ПОМИЛКА] Жодного файлу не було зчитано. Перевірте правильність форматів.")
     return pd.concat(df_list, ignore_index=True)
 
 # Зчитуємо всі файли у єдиний DataFrame
@@ -90,14 +99,14 @@ vhi_df = vhi_df.astype({'Year': int, 'Week': int, 'Province_id': int})
 
 # Ряд VHI для області за вказаний рік
 def vhi_by_year_province(df, province_id, year):
-    province_name = next((name for k, v in province_id_map.items() if v == province_id for key, name in province_name_map.items() if key == k), "Невідома область")
+    province_name = ua_id_to_name.get(province_id, "Невідома область")
     print(f"\n[VHI] Область {province_id} ({province_name}), Рік {year}:")
     print(df[(df['Province_id'] == province_id) & (df['Year'] == year)][['Week', 'VHI']])
 
 # Пошук екстремумів (min та max) для вказаних областей та років, середнього, медіани
 def vhi_extremums(df, province_ids, years):
     for pid in province_ids:
-        province_name = next((name for k, v in province_id_map.items() if v == pid for key, name in province_name_map.items() if key == k), "Невідома область")
+        province_name = ua_id_to_name.get(pid, "Невідома область")
         for y in years:
             subset = df[(df['Province_id'] == pid) & (df['Year'] == y)]
             if not subset.empty:
@@ -107,10 +116,7 @@ def vhi_extremums(df, province_ids, years):
 
 # Виводить VHI для діапазону років та списку областей
 def vhi_range(df, province_ids, year_from, year_to):
-    names = []
-    for pid in province_ids:
-        name = next((n for k, v in province_id_map.items() if v == pid for key, n in province_name_map.items() if key == k), "Невідома область")
-        names.append(f"{pid} ({name})")
+    names = [f"{pid} ({ua_id_to_name.get(pid, 'Невідома область')})" for pid in province_ids]
     print(f"\n[ДІАПАЗОН] Області {names}, Роки {year_from}-{year_to}")
     print(df[(df['Province_id'].isin(province_ids)) & (df['Year'].between(year_from, year_to))][['Province_name', 'Year', 'Week', 'VHI']])
 
@@ -123,12 +129,9 @@ def detect_extreme_droughts(df, threshold=15, province_count=5):
     print(f"\n[ПОСУХИ] Роки з ≥{province_count} областями з VHI < {threshold}:")
     for year in critical_years.index:
         provinces = grouped[grouped['Year'] == year]['Province_id'].tolist()
-        provinces_names = []
-        for pid in provinces:
-            name = next((n for k, v in province_id_map.items() if v == pid for key, n in province_name_map.items() if key == k), "Невідома область")
-            provinces_names.append(name)
+        province_names = [ua_id_to_name.get(pid, "Невідома область") for pid in provinces]
         values = df[(df['Year'] == year) & (df['Province_id'].isin(provinces)) & (df['VHI'] < threshold)][['Province_name', 'Week', 'VHI']]
-        print(f"  Рік: {year}, Області: {[f'{r} ({n})' for r,n in zip(provinces, provinces_names)]}")
+        print(f"  Рік: {year}, Області: {[f'{r} ({n})' for r, n in zip(provinces, province_names)]}")
         print(values)
 
 # Приклади виклику
