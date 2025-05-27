@@ -23,6 +23,7 @@
 
 # Бібліотеки:
 os
+re
 datetime
 urllib.request
 pandas
